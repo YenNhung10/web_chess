@@ -1,0 +1,215 @@
+from flask import Flask, render_template, request, jsonify, send_from_directory
+import chess
+
+app = Flask(__name__)
+
+board = chess.Board()
+
+
+def evaluate_board(board):
+    if board.is_checkmate():
+        return -9999 if board.turn == chess.WHITE else 9999
+    if board.is_stalemate():
+        return 0
+
+    piece_values = {
+        chess.PAWN: 10,
+        chess.KNIGHT: 30,
+        chess.BISHOP: 30,
+        chess.ROOK: 50,
+        chess.QUEEN: 90,
+        chess.KING: 900
+    }
+
+    score = 0
+    for square in chess.SQUARES:
+        piece = board.piece_at(square)
+        if piece:
+            value = piece_values[piece.piece_type]
+            if piece.color == chess.WHITE:
+                score += value
+            else:
+                score -= value
+    return score
+
+
+def minimax(board, depth, alpha, beta, is_maximizing):
+    if depth == 0 or board.is_game_over():
+        return evaluate_board(board)
+
+    legal_moves = list(board.legal_moves)
+
+    if is_maximizing:
+        max_eval = -99999
+        for move in legal_moves:
+            board.push(move)
+            eval_score = minimax(board, depth - 1, alpha, beta, False)
+            board.pop()
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = 99999
+        for move in legal_moves:
+            board.push(move)
+            eval_score = minimax(board, depth - 1, alpha, beta, True)
+            board.pop()
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+
+def get_best_ai_move(board, depth=2):
+    """
+    AI chơi quân đen.
+    Sau khi trắng đi xong thì tới lượt đen.
+    AI sẽ chọn nước có lợi cho đen nhất.
+    """
+    best_move = None
+    best_value = 99999
+
+    for move in board.legal_moves:
+        board.push(move)
+        value = minimax(board, depth - 1, -99999, 99999, True)
+        board.pop()
+
+        if value < best_value:
+            best_value = value
+            best_move = move
+
+    return best_move
+
+
+def board_to_matrix(board):
+    matrix = [["--" for _ in range(8)] for _ in range(8)]
+
+    piece_map = {
+        "P": "wP", "N": "wN", "B": "wB", "R": "wR", "Q": "wQ", "K": "wK",
+        "p": "bP", "n": "bN", "b": "bB", "r": "bR", "q": "bQ", "k": "bK"
+    }
+
+    for square in chess.SQUARES:
+        piece = board.piece_at(square)
+        if piece:
+            row = 7 - chess.square_rank(square)
+            col = chess.square_file(square)
+            matrix[row][col] = piece_map[piece.symbol()]
+
+    return matrix
+
+def reset_board_for_black_player():
+    """
+    Người chơi cầm đen.
+    AI (trắng) sẽ đi trước 1 nước ngay khi bắt đầu ván.
+    """
+    global board
+    board = chess.Board()
+
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/get_board", methods=["GET"])
+def get_board():
+    return jsonify({
+        "success": True,
+        "fen": board.fen(),
+        "turn": "white" if board.turn == chess.WHITE else "black",
+        "game_over": board.is_game_over(),
+        "result": board.result() if board.is_game_over() else None
+    })
+
+
+@app.route("/legal_moves_from", methods=["POST"])
+def legal_moves_from():
+    data = request.get_json()
+    square_name = data.get("square", "").strip()   # ví dụ "e2"
+
+    try:
+        from_square = chess.parse_square(square_name)
+    except:
+        return jsonify({"success": False, "moves": []})
+
+    legal_targets = []
+
+    # chỉ highlight quân trắng của người chơi
+    piece = board.piece_at(from_square)
+    if piece is None or piece.color != chess.WHITE or board.turn != chess.WHITE:
+        return jsonify({"success": True, "moves": []})
+
+    for move in board.legal_moves:
+        if move.from_square == from_square:
+            legal_targets.append(chess.square_name(move.to_square))
+
+    return jsonify({
+        "success": True,
+        "moves": legal_targets
+    })
+
+@app.route('/chess_peices/<path:filename>')
+def chess_pieces(filename):
+    return send_from_directory('chess_peices', filename)
+
+
+@app.route("/move", methods=["POST"])
+def make_move():
+    global board
+    data = request.get_json()
+    user_move = data.get("move", "").strip()   # ví dụ e2e4
+
+    try:
+        move = chess.Move.from_uci(user_move)
+
+        if move not in board.legal_moves:
+            return jsonify({"success": False, "error": "Nước đi không hợp lệ!"})
+
+        # người chơi trắng đi
+        board.push(move)
+
+        if board.is_game_over():
+            return jsonify({
+                "success": True,
+                "fen": board.fen(),
+                "ai_move": None,
+                "game_over": True,
+                "result": board.result()
+            })
+
+        # AI đen đi
+        ai_move = get_best_ai_move(board, depth=2)
+        ai_move_uci = None
+
+        if ai_move is not None:
+            ai_move_uci = ai_move.uci()
+            board.push(ai_move)
+
+        return jsonify({
+            "success": True,
+            "fen": board.fen(),
+            "ai_move": ai_move_uci,
+            "game_over": board.is_game_over(),
+            "result": board.result() if board.is_game_over() else None
+        })
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route("/reset", methods=["POST"])
+def reset():
+    global board
+    board = chess.Board()
+    return jsonify({
+        "success": True,
+        "fen": board.fen()
+    })
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
