@@ -1,4 +1,4 @@
-let currentFen = 'start';
+currentFen = 'start'
 let highlightedSquares = [];
 let selectedSquare = null;
 
