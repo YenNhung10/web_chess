@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Chess Minimax - Nhóm 11</title>
+
+    <link rel="stylesheet"
+          href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+
+    <style>
+        body {
+            background: url('https://images.unsplash.com/photo-1529699211952-734e80c4d42b?auto=format&fit=crop&w=1920&q=80') center/cover fixed;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            color: white;
+            font-family: sans-serif;
+            min-height: 100vh;
+            margin: 0;
+        }
+
+        .glass-box {
+            background: rgba(0,0,0,0.75);
+            padding: 30px;
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+            margin-top: 40px;
+            text-align: center;
+            width: 520px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+        }
+
+        #myBoard {
+            width: 420px;
+            margin: 20px auto;
+            border: 5px solid #fff;
+            border-radius: 6px;
+        }
+
+        #status {
+            margin-top: 15px;
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        button, select {
+            padding: 10px 20px;
+            cursor: pointer;
+            font-size: 16px;
+            border-radius: 8px;
+            border: none;
+            margin-top: 12px;
+        }
+
+        select {
+            background: #fff;
+            color: #000;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+
+        /* ô quân đang chọn */
+        .highlight-selected {
+            box-shadow: inset 0 0 3px 3px rgba(0, 255, 255, 0.9);
+        }
+
+        /* ô có thể đi */
+        .highlight-move {
+            box-shadow: inset 0 0 3px 3px rgba(255, 255, 0, 0.9);
+        }
+    </style>
+</head>
+<body>
+
+<div class="glass-box">
+    <h1>AI Chess - Nhóm 11</h1>
+    
+    <div style="margin-bottom: 10px;">
+        <label style="font-size: 16px; font-weight: bold;">Chọn phe của bạn:</label>
+        <select id="colorSelect" onchange="resetGame()">
+            <option value="w" selected>Quân Trắng (Đi trước)</option>
+            <option value="b">Quân Đen (Đi sau)</option>
+        </select>
+    </div>
+
+    <div id="myBoard"></div>
+    <button onclick="resetGame()">Chơi lại từ đầu</button>
+    <div id="status">Lượt của bạn (Trắng)</div>
+</div>
+
+<div id="custom-lose-popup" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.75); z-index: 99999; justify-content: center; align-items: center; font-family: Arial, sans-serif;">
+    <div style="background: #222222; color: white; padding: 30px; border-radius: 14px; text-align: center; box-shadow: 0 4px 25px rgba(0,0,0,0.6); max-width: 340px; width: 85%; border: 2px solid #ff4d4d;">
+        <h2 style="color: #ff4d4d; margin-top: 0; font-size: 24px; letter-spacing: 1px;">KẾT QUẢ</h2>
+        <p id="custom-popup-message" style="font-size: 19px; margin: 25px 0; font-weight: bold; line-height: 1.4; color: #f0f0f0;"></p>
+        <button onclick="closeCustomPopup()" style="background: #ff4d4d; color: white; border: none; padding: 12px 30px; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold; text-transform: uppercase; transition: background 0.2s;">
+            Chơi lại ván mới
+        </button>
+    </div>
+</div>
+
+<script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
+<script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+
+<script>
+    let currentFen = 'start';
+    let selectedSquare = null;
+    let legalTargets = [];
+
+    const statusDiv = document.getElementById("status");
+
+    // GIỮ NGUYÊN: Đường dẫn thư mục gốc chứa ảnh của bạn để không bị lỗi hiển thị quân cờ nhựa gỗ
+    const board = Chessboard('myBoard', {
+        draggable: false,
+        position: 'start',
+        pieceTheme: '/chess_peices/{piece}.png'
+    });
+
+    function clearHighlights() {
+        $('.square-55d63').removeClass('highlight-selected');
+        $('.square-55d63').removeClass('highlight-move');
+    }
+
+    function highlightSelected(square) {
+        $('#myBoard .square-' + square).addClass('highlight-selected');
+    }
+
+    function highlightMoves(moves) {
+        moves.forEach(sq => {
+            $('#myBoard .square-' + sq).addClass('highlight-move');
+        });
+    }
+
+    function fetchLegalMoves(square) {
+        $.ajax({
+            url: '/legal_moves_from',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({ square: square }),
+            success: function(data) {
+                clearHighlights();
+                selectedSquare = null;
+                legalTargets = [];
+
+                if (!data.success || !data.moves || data.moves.length === 0) {
+                    return;
+                }
+
+                selectedSquare = square;
+                legalTargets = data.moves;
+
+                highlightSelected(square);
+                highlightMoves(legalTargets);
+            },
+            error: function() {
+                alert("Không lấy được nước đi hợp lệ!");
+            }
+        });
+    }
+
+    function sendMove(fromSquare, toSquare) {
+        // ĐÃ SỬA LỖI: Lấy giá trị chính xác bằng cú pháp jQuery .val() thay vì .value
+        const playerColor = $('#colorSelect').val(); 
+        const colorName = (playerColor === 'b') ? "Đen" : "Trắng";
+
+        $.ajax({
+            url: '/move',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({ move: fromSquare + toSquare }),
+            success: function(data) {
+                if (!data.success) {
+                    alert(data.error || "Nước đi không hợp lệ!");
+                    clearHighlights();
+                    selectedSquare = null;
+                    legalTargets = [];
+                    board.position(currentFen);
+                    bindSquareClicks();
+                    return;
+                }
+
+                currentFen = data.fen;
+                board.position(currentFen);
+
+                clearHighlights();
+                selectedSquare = null;
+                legalTargets = [];
+
+                if (data.game_over) {
+                    statusDiv.innerText = "Ván cờ kết thúc: " + (data.result || "");
+                    
+                    setTimeout(function() {
+                        let thongBaoText = "Trận đấu kết thúc!";
+                        
+                        if (data.result === "0-1") {
+                            thongBaoText = (playerColor === 'b') ? "Chúc mừng! Bạn đã thắng AI ván này!" : "ckoi grm nguc ngkik qua ik";
+                        } else if (data.result === "1-0") {
+                            thongBaoText = (playerColor === 'w') ? "Chúc mừng! Bạn đã thắng AI ván này!" : "ckoi grm nguc ngkik qua ik";
+                        } else {
+                            thongBaoText = "Trận đấu hòa cờ!";
+                        }
+
+                        $('#custom-popup-message').text(thongBaoText);
+                        $('#custom-lose-popup').css('display', 'flex');
+                    }, 500);
+                } else if (data.ai_move) {
+                    statusDiv.innerText = "AI vừa đi: " + data.ai_move + " | Lượt của bạn (" + colorName + ")";
+                } else {
+                    statusDiv.innerText = "Lượt của bạn (" + colorName + ")";
+                }
+
+                bindSquareClicks();
+            },
+            error: function() {
+                alert("Không kết nối được tới server!");
+                board.position(currentFen);
+                bindSquareClicks();
+            }
+        });
+    }
+
+    function handleSquareClick(square) {
+        if (selectedSquare === null) {
+            fetchLegalMoves(square);
+            return;
+        }
+
+        if (square === selectedSquare) {
+            clearHighlights();
+            selectedSquare = null;
+            legalTargets = [];
+            return;
+        }
+
+        if (legalTargets.includes(square)) {
+            sendMove(selectedSquare, square);
+            return;
+        }
+
+        fetchLegalMoves(square);
+    }
+
+    function bindSquareClicks() {
+        $('#myBoard .square-55d63').off('click');
+
+        $('#myBoard .square-55d63').on('click', function() {
+            const classes = $(this).attr('class').split(' ');
+            let clickedSquare = null;
+
+            for (let cls of classes) {
+                if (cls.startsWith('square-') && cls !== 'square-55d63') {
+                    clickedSquare = cls.replace('square-', '');
+                    break;
+                }
+            }
+
+            if (clickedSquare) {
+                handleSquareClick(clickedSquare);
+            }
+        });
+    }
+
+    // ĐÃ SỬA LỖI XOAY BÀN CỜ VÀ GIỮ NGUYÊN LINK ẢNH GỐC
+    function resetGame() {
+        const playerColor = $('#colorSelect').val();
+
+        if (playerColor === 'b') {
+            board.orientation('black');
+            statusDiv.innerText = "Đang đợi AI đi nước đầu tiên...";
+        } else {
+            board.orientation('white');
+            statusDiv.innerText = "Lượt của bạn (Trắng)";
+        }
+
+        $.ajax({
+            url: '/reset',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({ color: playerColor }),
+            success: function(data) {
+                currentFen = data.fen;
+                board.position(currentFen);
+                clearHighlights();
+                selectedSquare = null;
+                legalTargets = [];
+                
+                if (playerColor === 'b' && data.ai_move) {
+                    statusDiv.innerText = "AI (Trắng) vừa đi: " + data.ai_move + " | Lượt của bạn (Đen)";
+                } else {
+                    statusDiv.innerText = "Lượt của bạn (Trắng)";
+                }
+                bindSquareClicks();
+            },
+            error: function() {
+                alert("Reset thất bại!");
+            }
+        });
+    }
+
+    function loadBoard() {
+        $.get('/get_board', function(data) {
+            if (data.success) {
+                currentFen = data.fen;
+                board.position(currentFen);
+                bindSquareClicks();
+            } else {
+                resetGame();
+            }
+        });
+    }
+
+    loadBoard();
+
+    function closeCustomPopup() {
+        $('#custom-lose-popup').css('display', 'none');
+        resetGame();
+    }
+</script>
+
+</body>
+</html>
